@@ -5,6 +5,7 @@ import time
 import random
 import string
 import colorama
+import shlex
 
 # Constants for Kubernetes and profiling configuration
 K8S_CONTEXT = 'k8s_context'
@@ -34,8 +35,11 @@ def run_command(command, desc="Running Command"):
 
             # Debido a que no sabemos el progreso real del comando, la barra se actualizará de manera artificial
             progress = 0
+            stdout, stderr = None, None
             while True:
                 if process.poll() is not None:  # Verifica si el comando ha terminado
+                    # Capture output only after process is confirmed finished
+                    stdout, stderr = process.communicate()
                     pbar.n = 100
                     pbar.last_print_n = 100
                     pbar.refresh()
@@ -44,9 +48,6 @@ def run_command(command, desc="Running Command"):
                 if progress < 99:  # Prevent exceeding 100%
                     pbar.update(1)  # Actualiza la barra de progreso
                     progress += 1
-
-        # Captura la salida y errores del comando
-        stdout, stderr = process.communicate()
 
         # Cierra colorama
         colorama.deinit()
@@ -58,16 +59,25 @@ def run_command(command, desc="Running Command"):
             # En caso de error, imprime y retorna el error
             print(f"Error: {stderr}  {command}", file=sys.stderr)
             return False, stderr  # Retorna False y el error
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt: Process terminated by user.", file=sys.stderr)
+        if 'process' in locals():
+            try:
+                process.terminate()
+            except:
+                pass
+        return False, "KeyboardInterrupt: Process terminated by user."
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         return False, str(e)
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt: Process terminated by user.", file=sys.stderr)
-        return False, "KeyboardInterrupt: Process terminated by user."
 
 
 def pick_running_pod():
-    command = f"kubectl --context {K8S_CONTEXT} get pods --field-selector=status.phase==Running --namespace {NAMESPACE}"
+    # Escape shell arguments to prevent command injection
+    safe_context = shlex.quote(K8S_CONTEXT)
+    safe_namespace = shlex.quote(NAMESPACE)
+    
+    command = f"kubectl --context {safe_context} get pods --field-selector=status.phase==Running --namespace {safe_namespace}"
     print("command = ", command)
     success, output = run_command(command, desc="Listing Running Pods")
     if not success:
@@ -98,11 +108,16 @@ def execute_profiling_commands(commands):
 
 
 def enable_profiling(donor_pod):
+    # Escape shell arguments to prevent command injection
+    safe_context = shlex.quote(K8S_CONTEXT)
+    safe_namespace = shlex.quote(NAMESPACE)
+    safe_pod = shlex.quote(donor_pod)
+    
     commands = [
-        f"kubectl cp --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod}:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini ./docker-php-ext-xdebug.ini-backup",
-        f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- bash -c 'echo -e \"zend_extension=xdebug\\nxdebug.mode=profile\\nxdebug.output_dir=/tmp/cachegrind/\\nxdebug.start_with_request=trigger\" > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'",
-        f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- bash -c 'mkdir -p /tmp/cachegrind/ && chown www-data:www-data /tmp/cachegrind/'",
-        f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- bash -c 'pkill -USR2 php-fpm'"
+        f"kubectl cp --context {safe_context} --namespace={safe_namespace} {safe_pod}:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini ./docker-php-ext-xdebug.ini-backup",
+        f"kubectl exec -it --context {safe_context} --namespace={safe_namespace} {safe_pod} -- bash -c 'echo -e \"zend_extension=xdebug\\nxdebug.mode=profile\\nxdebug.output_dir=/tmp/cachegrind/\\nxdebug.start_with_request=trigger\" > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'",
+        f"kubectl exec -it --context {safe_context} --namespace={safe_namespace} {safe_pod} -- bash -c 'mkdir -p /tmp/cachegrind/ && chown www-data:www-data /tmp/cachegrind/'",
+        f"kubectl exec -it --context {safe_context} --namespace={safe_namespace} {safe_pod} -- bash -c 'pkill -USR2 php-fpm'"
     ]
     execute_profiling_commands(commands)
     print(f"XDEBUG_TRIGGER: {TRACE_RANDOM_KEY}")
@@ -110,32 +125,47 @@ def enable_profiling(donor_pod):
 
 
 def disable_profiling(donor_pod):
+    # Escape shell arguments to prevent command injection
+    safe_context = shlex.quote(K8S_CONTEXT)
+    safe_namespace = shlex.quote(NAMESPACE)
+    safe_pod = shlex.quote(donor_pod)
+    
     commands = [
-        f"kubectl cp --context {K8S_CONTEXT} --namespace={NAMESPACE} ./docker-php-ext-xdebug.ini-backup {donor_pod}:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini",
-        f"kubectl exec --context {K8S_CONTEXT} -it --namespace={NAMESPACE} {donor_pod} -- bash -c 'pkill -USR2 php-fpm'"
+        f"kubectl cp --context {safe_context} --namespace={safe_namespace} ./docker-php-ext-xdebug.ini-backup {safe_pod}:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini",
+        f"kubectl exec --context {safe_context} -it --namespace={safe_namespace} {safe_pod} -- bash -c 'pkill -USR2 php-fpm'"
     ]
     execute_profiling_commands(commands)
     print("Profiling disabled and configuration restored.")
 
 
 def download_profiles(donor_pod):
-    success, _ = run_command(f"kubectl cp --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod}:/tmp/cachegrind/. ./cachegrind/")
+    # Escape shell arguments to prevent command injection
+    safe_context = shlex.quote(K8S_CONTEXT)
+    safe_namespace = shlex.quote(NAMESPACE)
+    safe_pod = shlex.quote(donor_pod)
+    
+    success, _ = run_command(f"kubectl cp --context {safe_context} --namespace={safe_namespace} {safe_pod}:/tmp/cachegrind/. ./cachegrind/")
     if success:
         print("Profiles downloaded.")
 
 
 def install_xdebug(donor_pod):
+    # Escape shell arguments to prevent command injection
+    safe_context = shlex.quote(K8S_CONTEXT)
+    safe_namespace = shlex.quote(NAMESPACE)
+    safe_pod = shlex.quote(donor_pod)
+    
     # Primero verifica si Xdebug ya está instalado ejecutando un comando que intente localizarlo
-    check_command = f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- php -m | grep xdebug"
+    check_command = f"kubectl exec -it --context {safe_context} --namespace={safe_namespace} {safe_pod} -- php -m | grep xdebug"
     check_success, check_output = run_command(check_command, desc="Checking Xdebug installation")
 
-    # Si encuentra 'xdebug' en la salida, asume que ya está instalado y sale
-    if 'xdebug' in check_output.lower():
+    # Only check for xdebug if command was successful and output is not empty
+    if check_success and check_output and 'xdebug' in check_output.lower():
         print("Xdebug ya está instalado.")
         return
 
     # Si no encuentra Xdebug, procede con la instalación
-    install_command = f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- bash -c 'pecl install xdebug && docker-php-ext-enable xdebug'"
+    install_command = f"kubectl exec -it --context {safe_context} --namespace={safe_namespace} {safe_pod} -- bash -c 'pecl install xdebug && docker-php-ext-enable xdebug'"
     success, output = run_command(install_command, desc="Installing Xdebug")
     if success:
         print("Xdebug instalado exitosamente.")

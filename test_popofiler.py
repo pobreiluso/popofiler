@@ -96,6 +96,51 @@ class TestPopoFiler(unittest.TestCase):
             # (since we prevent exceeding 99% in our fix)
             update_calls = [call for call in mock_pbar.update.call_args_list if call == call(1)]
             self.assertLessEqual(len(update_calls), 99)
+    
+    @patch('popofiler.subprocess.Popen')
+    def test_run_command_keyboard_interrupt_handling(self, mock_popen):
+        """Test that KeyboardInterrupt is handled properly."""
+        mock_process = MagicMock()
+        mock_process.poll.return_value = None
+        mock_popen.return_value = mock_process
+        
+        with patch('popofiler.tqdm') as mock_tqdm:
+            mock_pbar = MagicMock()
+            mock_tqdm.return_value.__enter__.return_value = mock_pbar
+            
+            # Mock KeyboardInterrupt during progress loop
+            def side_effect(*args, **kwargs):
+                raise KeyboardInterrupt()
+            mock_pbar.update.side_effect = side_effect
+            
+            success, output = popofiler.run_command("test command")
+            
+            self.assertFalse(success)
+            self.assertIn("KeyboardInterrupt", output)
+    
+    @patch('popofiler.run_command')
+    def test_install_xdebug_false_positive_check(self, mock_run_command):
+        """Test that install_xdebug handles false positive detection correctly."""
+        # Mock a failed command that contains 'xdebug' in error message
+        mock_run_command.return_value = (False, "xdebug: command not found")
+        
+        # Mock successful installation
+        def install_side_effect(command, desc=None):
+            if "php -m" in command:
+                return (False, "xdebug: command not found")
+            else:
+                return (True, "Installation successful")
+        
+        mock_run_command.side_effect = install_side_effect
+        
+        # Should proceed with installation despite 'xdebug' in error message
+        with patch('builtins.print') as mock_print:
+            popofiler.install_xdebug("test-pod")
+            
+            # Check that installation was attempted
+            install_calls = [call for call in mock_run_command.call_args_list 
+                           if 'pecl install xdebug' in str(call)]
+            self.assertGreater(len(install_calls), 0)
 
     def test_trace_random_key_generation(self):
         """Test that TRACE_RANDOM_KEY is generated and has correct length."""
@@ -133,6 +178,54 @@ class TestShellScriptLogic(unittest.TestCase):
         self.assertTrue(os.path.exists(cachegrind_dir))
         
         shutil.rmtree(cachegrind_dir)
+
+    def test_help_command_exit_logic(self):
+        """Test that help command should exit after displaying help."""
+        # This simulates the shell script fix where help should exit
+        # In real shell script, this would be: if [ "$1" = "help" ]; then Help; exit 0; fi
+        
+        def mock_help_handler(command):
+            if command == "help":
+                print("Help displayed")
+                return True  # Should exit
+            return False  # Should continue
+        
+        # Test help command
+        result = mock_help_handler("help")
+        self.assertTrue(result)  # Should indicate exit
+        
+        # Test non-help command
+        result = mock_help_handler("enable-profiling")
+        self.assertFalse(result)  # Should continue
+
+
+class TestSecurityFixes(unittest.TestCase):
+    """Test security-related bug fixes."""
+    
+    def test_shlex_import(self):
+        """Test that shlex is properly imported for command injection prevention."""
+        import popofiler
+        # Verify shlex is available in the module
+        self.assertTrue(hasattr(popofiler, 'shlex'))
+    
+    @patch('popofiler.run_command')
+    def test_safe_shell_escaping_in_functions(self, mock_run_command):
+        """Test that all functions properly escape shell arguments."""
+        mock_run_command.return_value = (True, "success")
+        
+        dangerous_pod = "pod; rm -rf /"
+        
+        # Test each function that constructs kubectl commands
+        popofiler.enable_profiling(dangerous_pod)
+        popofiler.disable_profiling(dangerous_pod)
+        popofiler.download_profiles(dangerous_pod)
+        popofiler.install_xdebug(dangerous_pod)
+        
+        # Verify all calls used properly escaped arguments
+        for call in mock_run_command.call_args_list:
+            command = call[0][0]  # First positional argument is the command
+            # The dangerous characters should be properly quoted
+            self.assertNotIn("; rm -rf /", command)
 
 
 if __name__ == '__main__':

@@ -34,9 +34,11 @@ Help() {
 
 if [ "$1" = "help" ]; then
     Help
+    exit 0
 fi
 
 #Pick running pod
+# Use printf to safely handle variables that might contain special characters
 DONOR_POD_NAME=$(kubectl --context "$K8S_CONTEXT" get pods --field-selector=status.phase==Running --namespace "$NAMESPACE" | grep "$PROJECT_NAME" | grep -v "$POD_NAME_ANTI_PATTERN" | head -1 | awk '{print $1}')
 
 if [ -z "$DONOR_POD_NAME" ]; then
@@ -48,22 +50,22 @@ echo "Selected pod: $DONOR_POD_NAME"
 
 if [ "$1" = "enable-profiling" ]; then
 	#BACKUP DE 15-xdebug.ini
-	if ! kubectl cp --namespace="$NAMESPACE" "$DONOR_POD_NAME":/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini ./docker-php-ext-xdebug.ini-backup; then
+	if ! kubectl cp --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME":/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini ./docker-php-ext-xdebug.ini-backup; then
 		echo "Error: Failed to backup xdebug configuration" >&2
 		exit 1
 	fi
 	#Enable xdebug under triggering
-	if ! kubectl exec -it --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'echo -e "zend_extension=xdebug.so\nxdebug.mode=profile\nxdebug.output_dir=/tmp/cachegrind/\nxdebug.start_with_request=trigger" > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'; then
+	if ! kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'echo -e "zend_extension=xdebug.so\nxdebug.mode=profile\nxdebug.output_dir=/tmp/cachegrind/\nxdebug.start_with_request=trigger" > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'; then
 		echo "Error: Failed to configure xdebug" >&2
 		exit 1
 	fi
-	if ! kubectl exec -it --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'mkdir -p /tmp/cachegrind/ && chown www-data:www-data /tmp/cachegrind/'; then
+	if ! kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'mkdir -p /tmp/cachegrind/ && chown www-data:www-data /tmp/cachegrind/'; then
 		echo "Error: Failed to create cachegrind directory" >&2
 		exit 1
 	fi
 	echo "XDEBUG_TRIGGER: $TRACE_RANDOM_KEY"
 	#Restart php-fpm
-	if ! kubectl exec -it --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pkill -USR2 php-fpm'; then
+	if ! kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pkill -USR2 php-fpm'; then
 		echo "Warning: Failed to restart php-fpm" >&2
 	fi
 elif [ "$1" = "disable-profiling" ]; then
@@ -72,22 +74,22 @@ elif [ "$1" = "disable-profiling" ]; then
 		echo "Error: Backup file not found. Cannot restore configuration." >&2
 		exit 1
 	fi
-	if ! kubectl cp --namespace="$NAMESPACE" ./docker-php-ext-xdebug.ini-backup "$DONOR_POD_NAME":/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini; then
+	if ! kubectl cp --context="$K8S_CONTEXT" --namespace="$NAMESPACE" ./docker-php-ext-xdebug.ini-backup "$DONOR_POD_NAME":/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini; then
 		echo "Error: Failed to restore xdebug configuration" >&2
 		exit 1
 	fi
 	#Restart php-fpm
-	if ! kubectl exec -it --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pkill -USR2 php-fpm'; then
+	if ! kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pkill -USR2 php-fpm'; then
 		echo "Warning: Failed to restart php-fpm" >&2
 	fi
 elif [ "$1" = "download-profiles" ]; then
-	if ! kubectl cp --namespace="$NAMESPACE" "$DONOR_POD_NAME":/tmp/cachegrind/. ./cachegrind/; then
+	if ! kubectl cp --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME":/tmp/cachegrind/. ./cachegrind/; then
 		echo "Error: Failed to download profiles" >&2
 		exit 1
 	fi
 elif [ "$1" = "install-xdebug" ]; then
 	#Install xdebug
-	if ! kubectl exec -it --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pecl install xdebug && docker-php-ext-enable xdebug'; then
+	if ! kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pecl install xdebug && docker-php-ext-enable xdebug'; then
 		echo "Error: Failed to install xdebug" >&2
 		exit 1
 	fi
