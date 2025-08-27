@@ -33,6 +33,7 @@ def run_command(command, desc="Running Command"):
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, text=True)
 
             # Debido a que no sabemos el progreso real del comando, la barra se actualizará de manera artificial
+            progress = 0
             while True:
                 if process.poll() is not None:  # Verifica si el comando ha terminado
                     pbar.n = 100
@@ -40,7 +41,9 @@ def run_command(command, desc="Running Command"):
                     pbar.refresh()
                     break
                 time.sleep(0.05)  # Espera un poco antes de la siguiente actualización
-                pbar.update(1)  # Actualiza la barra de progreso
+                if progress < 99:  # Prevent exceeding 100%
+                    pbar.update(1)  # Actualiza la barra de progreso
+                    progress += 1
 
         # Captura la salida y errores del comando
         stdout, stderr = process.communicate()
@@ -55,8 +58,8 @@ def run_command(command, desc="Running Command"):
             # En caso de error, imprime y retorna el error
             print(f"Error: {stderr}  {command}", file=sys.stderr)
             return False, stderr  # Retorna False y el error
-    except subprocess.CalledProcessError as e:
-        print(f"Command failed with {e.returncode}", file=sys.stderr)
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
         return False, str(e)
     except KeyboardInterrupt:
         print("KeyboardInterrupt: Process terminated by user.", file=sys.stderr)
@@ -141,9 +144,16 @@ def install_xdebug(donor_pod):
         print(f"Error instalando Xdebug: {output}")
 
 def run_webgrind():
-    success, _ = run_command("docker run -it --rm -v \"$(pwd)/cachegrind/:/tmp\" --platform=linux/amd64 -p 8003:80 jokkedk/webgrind:latest", shell=True, progress_desc="Running Webgrind")
+    import os
+    if not os.path.exists("./cachegrind"):
+        print("Error: cachegrind directory not found. Please download profiles first.")
+        return False
+    
+    command = "docker run -it --rm -v \"$(pwd)/cachegrind/:/tmp\" --platform=linux/amd64 -p 8003:80 jokkedk/webgrind:latest"
+    success, _ = run_command(command, desc="Running Webgrind")
     if success:
         print("Webgrind running.")
+    return success
 
 
 def main():
@@ -151,9 +161,10 @@ def main():
         print("Usage: script.py [COMMAND]\nCommands:\n  help               Show this help message\n  enable-profiling   Enable Xdebug profiling in the pod\n  disable-profiling  Disable Xdebug profiling, restoring previous configuration\n  download-profiles  Download Xdebug profiling traces\n  install-xdebug     Install Xdebug in the pod, if not already installed\n  run-webgrind       Run Webgrind in a Docker container to analyze profiling traces")
         return
     donor_pod = pick_running_pod()
-    print(f"Selected Pod: {donor_pod}")
     if not donor_pod:
-        return
+        print("Error: No suitable pod found. Cannot proceed.")
+        sys.exit(1)
+    print(f"Selected Pod: {donor_pod}")
     if sys.argv[1] == "enable-profiling":
         enable_profiling(donor_pod)
     elif sys.argv[1] == "disable-profiling":
