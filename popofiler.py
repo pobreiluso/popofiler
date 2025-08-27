@@ -7,6 +7,7 @@ import string
 import colorama
 import shlex
 import os
+import re
 
 # Constants for Kubernetes and profiling configuration
 K8S_CONTEXT = 'k8s_context'
@@ -19,65 +20,80 @@ def generate_trace_key():
     return ''.join(random.choices(
         string.ascii_letters + string.digits, k=64))
 
-def run_command(command, desc="Running Command"):
+def sanitize_command_args(*args):
+    """Sanitize command arguments to prevent injection attacks."""
+    sanitized = []
+    for arg in args:
+        if not isinstance(arg, str):
+            arg = str(arg)
+        # Remove dangerous characters and validate
+        if re.search(r'[;&|`$(){}\[\]<>*?~]', arg) and not arg.startswith('kubectl'):
+            raise ValueError(f"Potentially dangerous characters found in argument: {arg}")
+        sanitized.append(arg)
+    return sanitized
+
+def run_command(command_args, desc="Running Command"):
     """
-    Ejecuta un comando en el sistema y captura su salida, mostrando una barra de progreso con color.
+    Execute a system command safely and capture its output with progress bar.
 
     Args:
-        command (str): El comando a ejecutar.
-        desc (str): Descripción del comando para mostrar.
+        command_args (list): List of command arguments to execute.
+        desc (str): Description of the command for display.
 
     Returns:
-        tuple: Una tupla conteniendo un booleano que indica éxito, y la salida del comando o el mensaje de error.
+        tuple: A tuple containing success boolean and output/error message.
     """
-    if not command or not command.strip():
-        return False, "Empty command provided"
+    if not command_args or not isinstance(command_args, list):
+        return False, "Empty or invalid command provided"
+    
+    # Sanitize all arguments
+    try:
+        sanitized_args = sanitize_command_args(*command_args)
+    except ValueError as e:
+        return False, str(e)
     
     print(f"{desc}: ")
-    colorama.init()  # Inicializa colorama para colores en la terminal
+    colorama.init()
     
     process = None
     try:
-        # Inicializa la barra de progreso
-        with tqdm(total=100, desc="Ejecutando comando", bar_format="{l_bar}%s{bar}%s{r_bar}" % (colorama.Fore.BLUE, colorama.Fore.RESET)) as pbar:
-            # Ejecuta el comando usando shlex para mayor seguridad
-            # Nota: Para compatibilidad mantenemos shell=True pero validamos entrada
-            sanitized_command = command.strip()
-            process = subprocess.Popen(sanitized_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, text=True)
+        with tqdm(total=100, desc="Executing command", bar_format="{l_bar}%s{bar}%s{r_bar}" % (colorama.Fore.BLUE, colorama.Fore.RESET)) as pbar:
+            # Use subprocess with argument list for security (no shell=True)
+            process = subprocess.Popen(
+                sanitized_args, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True
+            )
 
-            # Debido a que no sabemos el progreso real del comando, la barra se actualizará de manera artificial
-            progress = 0
-            while process.poll() is None:  # Verifica si el comando ha terminado
-                time.sleep(0.05)  # Espera un poco antes de la siguiente actualización
-                progress = min(progress + 1, 99)  # No exceder 99 hasta completar
-                pbar.update(1 if pbar.n < 99 else 0)
+            # Progress bar update with proper synchronization
+            while process.poll() is None:
+                time.sleep(0.1)
+                if pbar.n < 99:
+                    pbar.update(1)
             
-            # Comando completado
+            # Complete progress bar
             pbar.n = 100
-            pbar.last_print_n = 100
             pbar.refresh()
 
-        # Captura la salida y errores del comando
-        stdout, stderr = process.communicate(timeout=30)  # Añadir timeout
-
-        # Maneja el resultado del comando
-        if process.returncode == 0:
-            return True, stdout  # Retorna True y la salida en caso de éxito
-        else:
-            # En caso de error, imprime y retorna el error
-            print(f"Error: {stderr}  {command}", file=sys.stderr)
-            return False, stderr  # Retorna False y el error
-            
-    except subprocess.TimeoutExpired:
-        if process:
+        # Get output with timeout and proper cleanup
+        try:
+            stdout, stderr = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
             process.kill()
-            process.communicate()  # Limpia buffers
-        error_msg = "Command timed out after 30 seconds"
-        print(f"Error: {error_msg}", file=sys.stderr)
-        return False, error_msg
+            stdout, stderr = process.communicate()
+            return False, "Command timed out after 30 seconds"
+
+        if process.returncode == 0:
+            return True, stdout
+        else:
+            print(f"Error: {stderr}", file=sys.stderr)
+            return False, stderr
+            
     except subprocess.CalledProcessError as e:
-        print(f"Command failed with {e.returncode}", file=sys.stderr)
-        return False, str(e)
+        error_msg = f"Command failed with exit code {e.returncode}"
+        print(error_msg, file=sys.stderr)
+        return False, error_msg
     except KeyboardInterrupt:
         if process:
             process.terminate()
@@ -85,7 +101,7 @@ def run_command(command, desc="Running Command"):
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
-        error_msg = "KeyboardInterrupt: Process terminated by user."
+        error_msg = "Process terminated by user"
         print(error_msg, file=sys.stderr)
         return False, error_msg
     except Exception as e:
@@ -94,10 +110,12 @@ def run_command(command, desc="Running Command"):
         return False, error_msg
     finally:
         colorama.deinit()
+        if process and process.poll() is None:
+            process.terminate()
 
 
 def validate_k8s_config():
-    """Validate that required Kubernetes configuration is available."""
+    """Validate that required Kubernetes configuration is available and secure."""
     required_vars = {
         'K8S_CONTEXT': K8S_CONTEXT,
         'PROJECT_NAME': PROJECT_NAME,
@@ -108,6 +126,12 @@ def validate_k8s_config():
         if not var_value or var_value in ['k8s_context', 'project-name', 'namespace-name']:
             print(f"Error: {var_name} must be configured with a valid value", file=sys.stderr)
             return False
+        
+        # Validate format to prevent injection
+        if not re.match(r'^[a-zA-Z0-9_.-]+$', var_value):
+            print(f"Error: {var_name} contains invalid characters. Only alphanumeric, underscore, dot, and dash allowed.", file=sys.stderr)
+            return False
+            
     return True
 
 def pick_running_pod():
@@ -115,9 +139,12 @@ def pick_running_pod():
     if not validate_k8s_config():
         return None
         
-    command = f"kubectl --context {K8S_CONTEXT} get pods --field-selector=status.phase==Running --namespace {NAMESPACE}"
-    print("command = ", command)
-    success, output = run_command(command, desc="Listing Running Pods")
+    command_args = [
+        'kubectl', '--context', K8S_CONTEXT, 'get', 'pods',
+        '--field-selector=status.phase==Running', '--namespace', NAMESPACE
+    ]
+    
+    success, output = run_command(command_args, desc="Listing Running Pods")
     if not success:
         print(f"Error: {output}")
         return None
@@ -126,20 +153,21 @@ def pick_running_pod():
         print("No output received from kubectl command")
         return None
 
-    # Filtra la salida para obtener el pod deseado
     lines = output.splitlines()
-    if len(lines) <= 1:  # Solo header o vacío
+    if len(lines) <= 1:
         print("No running pods found")
         return None
         
-    for line in lines[1:]:  # Skip header
+    for line in lines[1:]:
         if not line.strip():
             continue
         if PROJECT_NAME in line and POD_NAME_ANTI_PATTERN not in line:
             parts = line.split()
             if len(parts) > 0:
-                pod_name = parts[0]  # Asume que el nombre del pod está en la primera columna
-                return pod_name
+                pod_name = parts[0]
+                # Validate pod name format for security
+                if re.match(r'^[a-zA-Z0-9.-]+$', pod_name):
+                    return pod_name
     
     print(f"No suitable pods found matching project '{PROJECT_NAME}' and not matching anti-pattern '{POD_NAME_ANTI_PATTERN}'")
     return None
@@ -160,8 +188,8 @@ def execute_profiling_commands(commands):
         print("No commands to execute")
         return False
         
-    for i, command in enumerate(commands, 1):
-        success, output = run_command(command, desc=f"Executing Command {i}/{len(commands)}")
+    for i, command_args in enumerate(commands, 1):
+        success, output = run_command(command_args, desc=f"Executing Command {i}/{len(commands)}")
         if not success:
             print(f"Command {i} failed: {output}", file=sys.stderr)
             return False
@@ -178,10 +206,10 @@ def enable_profiling(donor_pod):
     trace_key = generate_trace_key()
     
     commands = [
-        f"kubectl cp --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod}:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini ./docker-php-ext-xdebug.ini-backup",
-        f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- bash -c 'echo -e \"zend_extension=xdebug\\nxdebug.mode=profile\\nxdebug.output_dir=/tmp/cachegrind/\\nxdebug.start_with_request=trigger\" > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'",
-        f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- bash -c 'mkdir -p /tmp/cachegrind/ && chown www-data:www-data /tmp/cachegrind/'",
-        f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- bash -c 'pkill -USR2 php-fpm'"
+        ['kubectl', 'cp', f'--context={K8S_CONTEXT}', f'--namespace={NAMESPACE}', f'{donor_pod}:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini', './docker-php-ext-xdebug.ini-backup'],
+        ['kubectl', 'exec', '-it', f'--context={K8S_CONTEXT}', f'--namespace={NAMESPACE}', donor_pod, '--', 'bash', '-c', 'echo -e "zend_extension=xdebug\nxdebug.mode=profile\nxdebug.output_dir=/tmp/cachegrind/\nxdebug.start_with_request=trigger" > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'],
+        ['kubectl', 'exec', '-it', f'--context={K8S_CONTEXT}', f'--namespace={NAMESPACE}', donor_pod, '--', 'bash', '-c', 'mkdir -p /tmp/cachegrind/ && chown www-data:www-data /tmp/cachegrind/'],
+        ['kubectl', 'exec', '-it', f'--context={K8S_CONTEXT}', f'--namespace={NAMESPACE}', donor_pod, '--', 'bash', '-c', 'pkill -USR2 php-fpm']
     ]
     
     if execute_profiling_commands(commands):
@@ -199,14 +227,15 @@ def disable_profiling(donor_pod):
         print("Error: Invalid pod name provided", file=sys.stderr)
         return False
     
-    # Check if backup file exists
-    if not os.path.exists('./docker-php-ext-xdebug.ini-backup'):
+    # Check if backup file exists and validate path
+    backup_path = './docker-php-ext-xdebug.ini-backup'
+    if not os.path.exists(backup_path) or not os.path.isfile(backup_path):
         print("Warning: Backup file not found. Cannot restore previous configuration.", file=sys.stderr)
         return False
         
     commands = [
-        f"kubectl cp --context {K8S_CONTEXT} --namespace={NAMESPACE} ./docker-php-ext-xdebug.ini-backup {donor_pod}:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini",
-        f"kubectl exec --context {K8S_CONTEXT} -it --namespace={NAMESPACE} {donor_pod} -- bash -c 'pkill -USR2 php-fpm'"
+        ['kubectl', 'cp', f'--context={K8S_CONTEXT}', f'--namespace={NAMESPACE}', './docker-php-ext-xdebug.ini-backup', f'{donor_pod}:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'],
+        ['kubectl', 'exec', '--context={K8S_CONTEXT}', '-it', f'--namespace={NAMESPACE}', donor_pod, '--', 'bash', '-c', 'pkill -USR2 php-fpm']
     ]
     
     if execute_profiling_commands(commands):
@@ -226,7 +255,7 @@ def download_profiles(donor_pod):
     # Create local directory if it doesn't exist
     os.makedirs('./cachegrind', exist_ok=True)
     
-    success, output = run_command(f"kubectl cp --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod}:/tmp/cachegrind/. ./cachegrind/", desc="Downloading Profiles")
+    success, output = run_command(['kubectl', 'cp', f'--context={K8S_CONTEXT}', f'--namespace={NAMESPACE}', f'{donor_pod}:/tmp/cachegrind/.', './cachegrind/'], desc="Downloading Profiles")
     if success:
         print("Profiles downloaded.")
         return True
@@ -241,8 +270,8 @@ def install_xdebug(donor_pod):
         print("Error: Invalid pod name provided", file=sys.stderr)
         return False
         
-    # Primero verifica si Xdebug ya está instalado ejecutando un comando que intente localizarlo
-    check_command = f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- php -m | grep xdebug"
+    # First check if Xdebug is already installed
+    check_command = ['kubectl', 'exec', '-it', f'--context={K8S_CONTEXT}', f'--namespace={NAMESPACE}', donor_pod, '--', 'php', '-m']
     check_success, check_output = run_command(check_command, desc="Checking Xdebug installation")
 
     # Si encuentra 'xdebug' en la salida, asume que ya está instalado y sale
@@ -250,8 +279,8 @@ def install_xdebug(donor_pod):
         print("Xdebug ya está instalado.")
         return True
 
-    # Si no encuentra Xdebug, procede con la instalación
-    install_command = f"kubectl exec -it --context {K8S_CONTEXT} --namespace={NAMESPACE} {donor_pod} -- bash -c 'pecl install xdebug && docker-php-ext-enable xdebug'"
+    # If Xdebug not found, proceed with installation
+    install_command = ['kubectl', 'exec', '-it', f'--context={K8S_CONTEXT}', f'--namespace={NAMESPACE}', donor_pod, '--', 'bash', '-c', 'pecl install xdebug && docker-php-ext-enable xdebug']
     success, output = run_command(install_command, desc="Installing Xdebug")
     if success:
         print("Xdebug instalado exitosamente.")
@@ -270,7 +299,12 @@ def run_webgrind():
         
     # Use absolute path for Docker volume mount
     cachegrind_path = os.path.abspath('./cachegrind')
-    command = f"docker run -it --rm -v \"{cachegrind_path}:/tmp\" --platform=linux/amd64 -p 8003:80 jokkedk/webgrind:latest"
+    # Validate path to prevent directory traversal
+    if not cachegrind_path.startswith(os.path.abspath('.')):
+        print("Error: Invalid cachegrind path", file=sys.stderr)
+        return False
+        
+    command = ['docker', 'run', '-it', '--rm', '-v', f'{cachegrind_path}:/tmp', '--platform=linux/amd64', '-p', '8003:80', 'jokkedk/webgrind:latest']
     
     success, output = run_command(command, desc="Running Webgrind")
     if success:
