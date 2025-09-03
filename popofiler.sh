@@ -1,13 +1,42 @@
 #!/bin/bash
-#set -x
-#TODO: Pasar contextos y apps por entorno en json o como sea.
+
+# Exit on any error
+set -e
+
+# Configuration - Please update these values for your environment
 K8S_CONTEXT='your_k8s_context_here'
 PROJECT_NAME='your_project_name_here'
 POD_NAME_PATTERN="" #NOT USED
 POD_NAME_ANTI_PATTERN='your_pod_name_anti_pattern_here'
 NAMESPACE='your_namespace_here'
-#TRACE_RANDOM_KEY='StartProfileForMe'
+
+# Generate random trace key
 TRACE_RANDOM_KEY=$(LC_ALL=C tr -dc A-Za-z0-9 </dev/urandom | head -c 64)
+
+# Function to check if required variables are set
+check_config() {
+    local missing=()
+    
+    if [[ "$K8S_CONTEXT" == "your_k8s_context_here" ]]; then
+        missing+=("K8S_CONTEXT")
+    fi
+    if [[ "$PROJECT_NAME" == "your_project_name_here" ]]; then
+        missing+=("PROJECT_NAME")
+    fi
+    if [[ "$POD_NAME_ANTI_PATTERN" == "your_pod_name_anti_pattern_here" ]]; then
+        missing+=("POD_NAME_ANTI_PATTERN")
+    fi
+    if [[ "$NAMESPACE" == "your_namespace_here" ]]; then
+        missing+=("NAMESPACE")
+    fi
+    
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "Error: Please configure the following variables in the script:" >&2
+        printf ' - %s\n' "${missing[@]}" >&2
+        echo "These are currently set to placeholder values." >&2
+        exit 1
+    fi
+}
 
 Help() {
     # Display Help
@@ -32,36 +61,114 @@ Help() {
     echo
 }
 
-if [ "$1" = "help" ]; then
+# Show help if requested or no arguments provided
+if [[ $# -eq 0 ]] || [[ "$1" == "help" ]]; then
     Help
+    exit 0
 fi
 
-#Pick running pod
-DONOR_POD_NAME=$(kubectl --context $K8S_CONTEXT get pods --field-selector=status.phase==Running --namespace $NAMESPACE | grep $PROJECT_NAME | grep -v $POD_NAME_ANTI_PATTERN | head -1 | awk '{print $1}')
+# Check configuration before proceeding
+check_config
 
-echo $DONOR_POD_NAME
+# Function to safely pick a running pod
+pick_running_pod() {
+    local pods_output
+    if ! pods_output=$(kubectl --context "$K8S_CONTEXT" get pods --field-selector=status.phase==Running --namespace "$NAMESPACE" 2>/dev/null); then
+        echo "Error: Failed to get pods. Check your kubectl configuration and context." >&2
+        exit 1
+    fi
+    
+    local donor_pod
+    donor_pod=$(echo "$pods_output" | grep "$PROJECT_NAME" | grep -v "$POD_NAME_ANTI_PATTERN" | head -1 | awk '{print $1}')
+    
+    if [[ -z "$donor_pod" ]]; then
+        echo "Error: No suitable pod found with project name '$PROJECT_NAME' excluding pattern '$POD_NAME_ANTI_PATTERN'" >&2
+        exit 1
+    fi
+    
+    echo "$donor_pod"
+}
 
-if [ "$1" = "enable-profiling" ]; then
-	#BACKUP DE 15-xdebug.ini
-	kubectl cp --namespace=$NAMESPACE $DONOR_POD_NAME:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini ./docker-php-ext-xdebug.ini-backup
-	#Enable xdebug under triggering
-	kubectl exec -it --namespace=$NAMESPACE $DONOR_POD_NAME -- bash -c 'echo -e "zend_extension=xdebug.so\nxdebug.mode=profile\nxdebug.output_dir=/tmp/cachegrind/\nxdebug.start_with_request=trigger" > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'
-	kubectl exec -it --namespace=$NAMESPACE $DONOR_POD_NAME -- bash -c 'mkdir -p /tmp/cachegrind/ && chown www-data:www-data /tmp/cachegrind/'
-	echo "XDEBUG_TRIGGER: "$TRACE_RANDOM_KEY
-	#Restart php-fpm
-	kubectl exec -it --namespace=$NAMESPACE $DONOR_POD_NAME -- bash -c 'pkill -USR2 php-fpm'
-elif [ "$1" = "disable-profiling" ]; then
-	#Restore backup xdebug.ini
-	kubectl cp --namespace=$NAMESPACE ./docker-php-ext-xdebug.ini-backup $DONOR_POD_NAME:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
-	#Restart php-fpm
-	kubectl exec -it --namespace=$NAMESPACE $DONOR_POD_NAME -- bash -c 'pkill -USR2 php-fpm'
-elif [ "$1" = "download-profiles" ]; then
-	kubectl exec -it --namespace=$NAMESPACE $DONOR_POD_NAME -- bash -c ''
-	kubectl cp --namespace=$NAMESPACE $DONOR_POD_NAME:/tmp/cachegrind/. ./cachegrind/
-elif [ "$1" = "install-xdebug" ]; then
-	#Install xdebug
-	kubectl exec -it --namespace=$NAMESPACE $DONOR_POD_NAME -- bash -c 'pecl install xdebug && docker-php-ext-enable xdebug'
-elif [ "$1" = "run-webgrind" ]; then
-	docker run -it --rm -v ./cachegrind/:/tmp --platform=linux/amd64 -p 8003:80 jokkedk/webgrind:latest
-	#docker run --rm -p 8003:80 clue/webgrind:latest
-fi
+# Get the pod name
+DONOR_POD_NAME=$(pick_running_pod)
+echo "Selected pod: $DONOR_POD_NAME"
+
+# Execute the requested command
+case "$1" in
+    "enable-profiling")
+        echo "Enabling Xdebug profiling..."
+        # Backup original xdebug configuration
+        if ! kubectl cp --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini" ./docker-php-ext-xdebug.ini-backup; then
+            echo "Warning: Could not backup original xdebug configuration. Proceeding anyway." >&2
+        fi
+        
+        # Enable xdebug with profiling configuration
+        kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'echo -e "zend_extension=xdebug\nxdebug.mode=profile\nxdebug.output_dir=/tmp/cachegrind/\nxdebug.start_with_request=trigger" > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini'
+        
+        # Create and set permissions for cachegrind directory
+        kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'mkdir -p /tmp/cachegrind/ && chown www-data:www-data /tmp/cachegrind/'
+        
+        echo "XDEBUG_TRIGGER: $TRACE_RANDOM_KEY"
+        
+        # Restart php-fpm to apply changes
+        kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pkill -USR2 php-fpm'
+        echo "Profiling enabled successfully."
+        ;;
+        
+    "disable-profiling")
+        echo "Disabling Xdebug profiling..."
+        if [[ ! -f "./docker-php-ext-xdebug.ini-backup" ]]; then
+            echo "Error: Backup file './docker-php-ext-xdebug.ini-backup' not found." >&2
+            echo "Cannot restore original configuration." >&2
+            exit 1
+        fi
+        
+        # Restore backup configuration
+        kubectl cp --context="$K8S_CONTEXT" --namespace="$NAMESPACE" ./docker-php-ext-xdebug.ini-backup "$DONOR_POD_NAME:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini"
+        
+        # Restart php-fpm
+        kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pkill -USR2 php-fpm'
+        echo "Profiling disabled and configuration restored."
+        ;;
+        
+    "download-profiles")
+        echo "Downloading profiles..."
+        # Create local directory if it doesn't exist
+        mkdir -p ./cachegrind/
+        
+        # Download profiles from pod
+        kubectl cp --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME:/tmp/cachegrind/." ./cachegrind/
+        echo "Profiles downloaded to ./cachegrind/"
+        ;;
+        
+    "install-xdebug")
+        echo "Installing Xdebug..."
+        # Check if Xdebug is already installed
+        if kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- php -m | grep -q xdebug; then
+            echo "Xdebug is already installed."
+        else
+            # Install Xdebug
+            kubectl exec -it --context="$K8S_CONTEXT" --namespace="$NAMESPACE" "$DONOR_POD_NAME" -- bash -c 'pecl install xdebug && docker-php-ext-enable xdebug'
+            echo "Xdebug installed successfully."
+        fi
+        ;;
+        
+    "run-webgrind")
+        echo "Starting Webgrind..."
+        if [[ ! -d "./cachegrind" ]]; then
+            echo "Warning: ./cachegrind directory not found." >&2
+            echo "Please run 'download-profiles' first to download profile files." >&2
+            exit 1
+        fi
+        
+        echo "Running Webgrind on http://localhost:8003"
+        echo "Press Ctrl+C to stop the container."
+        docker run -it --rm -v "$(pwd)/cachegrind":/tmp --platform=linux/amd64 -p 8003:80 jokkedk/webgrind:latest
+        ;;
+        
+    *)
+        echo "Error: Invalid command '$1'" >&2
+        echo "Use '$0 help' to see available commands." >&2
+        exit 1
+        ;;
+esac
