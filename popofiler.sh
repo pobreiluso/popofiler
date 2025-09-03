@@ -70,6 +70,21 @@ fi
 # Check configuration before proceeding
 check_config
 
+# Security: Validate namespace format
+if ! validate_k8s_name "$NAMESPACE"; then
+    echo "Error: Invalid namespace format: $NAMESPACE" >&2
+    exit 1
+fi
+
+# Function to validate Kubernetes resource names
+validate_k8s_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || [[ ${#name} -gt 63 ]]; then
+        return 1
+    fi
+    return 0
+}
+
 # Function to safely pick a running pod
 pick_running_pod() {
     local pods_output
@@ -83,6 +98,12 @@ pick_running_pod() {
     
     if [[ -z "$donor_pod" ]]; then
         echo "Error: No suitable pod found with project name '$PROJECT_NAME' excluding pattern '$POD_NAME_ANTI_PATTERN'" >&2
+        exit 1
+    fi
+    
+    # Security: Validate pod name format to prevent injection
+    if ! validate_k8s_name "$donor_pod"; then
+        echo "Error: Invalid pod name format: $donor_pod" >&2
         exit 1
     fi
     
