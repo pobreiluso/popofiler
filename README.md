@@ -1,31 +1,91 @@
-# Xdebug Kubernetes Profiler Toolkit README
+# 🛡️ Xdebug Kubernetes Profiler Toolkit - Security Hardened
 
-## Descripción
-Este conjunto de scripts proporciona una herramienta completa para gestionar Xdebug en pods de Kubernetes, específicamente orientado a entornos de producción y desarrollo. Permite a los usuarios activar o desactivar el perfilado, instalar Xdebug, guardar y descargar trazas de perfil, y utilizar Webgrind para analizar dichas trazas.
+## 🚨 CRITICAL SECURITY NOTICE
 
-## Características
-- **Activación/Desactivación de Xdebug**: Controla el estado de Xdebug en el pod seleccionado para perfilar tu aplicación de manera eficiente.
-- **Instalación de Xdebug**: Facilita la instalación de Xdebug en el pod para comenzar el perfilado rápidamente.
-- **Descarga de Trazas de Perfilado**: Permite descargar las trazas generadas por Xdebug para un análisis posterior.
-- **Análisis con Webgrind**: Integra la ejecución de Webgrind en un contenedor Docker para una interpretación gráfica de las trazas.
+**⚠️ USE ONLY THE PYTHON VERSION (`popofiler.py`)**
 
-## Uso
-El script se maneja mediante subcomandos específicos dependiendo de la acción que se desee realizar:
+The bash script (`popofiler.sh`) contains critical security vulnerabilities and should NOT be used in production. Always use the security-hardened Python implementation.
 
-`bash script.sh [subcomando]
+## 📋 Description
+This toolkit provides a comprehensive solution for managing Xdebug in Kubernetes pods, specifically designed for production and development environments with enterprise-grade security. It enables users to activate/deactivate profiling, install Xdebug, download profiling traces, and analyze them using Webgrind.
 
-### Subcomandos Disponibles
-- `enable-profiling`: Activa el perfilado Xdebug en el pod.
-- `disable-profiling`: Desactiva el perfilado Xdebug, restaurando la configuración previa.
-- `download-profiles`: Descarga las trazas de perfilado generadas por Xdebug.
-- `install-xdebug`: Instala Xdebug en el pod.
-- `run-webgrind`: Ejecuta Webgrind en un contenedor Docker para analizar las trazas de perfilado.
+## ✨ Key Features
+- **🔒 Security-First Design**: Input validation, secure command execution, and environment-based configuration
+- **⚡ Xdebug Management**: Safely control Xdebug state in selected pods with comprehensive validation
+- **📦 Automated Installation**: Secure Xdebug installation with proper error handling
+- **📊 Profile Analysis**: Secure download and analysis of profiling traces
+- **🐳 Webgrind Integration**: Containerized Webgrind execution for trace visualization
 
-## Precauciones
-- **Rendimiento**: La activación de Xdebug en producción puede impactar el rendimiento. Usar con cautela.
-- **Seguridad**: Asegúrate de no exponer información sensible al usar el script.
-- **Backups**: Realiza copias de seguridad de configuraciones importantes antes de realizar cambios.
-- **Reversión**: Es crucial poder revertir los cambios realizados por el script para mantener la estabilidad del entorno.
+## 🚀 Secure Usage
+
+### Prerequisites
+- Python 3.7+
+- kubectl configured with appropriate RBAC permissions
+- Docker (for Webgrind analysis)
+
+### Environment Setup
+```bash
+# Required environment variables
+export K8S_CONTEXT="your-k8s-context"
+export PROJECT_NAME="your-project"
+export NAMESPACE="your-namespace"  
+export POD_NAME_ANTI_PATTERN="pattern-to-exclude"
+```
+
+### Command Usage
+```bash
+# Use the secure Python implementation
+python3 popofiler.py [command]
+```
+
+### Available Commands
+- `help` - Show detailed usage information
+- `enable-profiling` - Securely enable Xdebug profiling with validation
+- `disable-profiling` - Safely disable profiling and restore configuration
+- `download-profiles` - Download profiling traces with path validation
+- `install-xdebug` - Install Xdebug with proper error handling
+- `run-webgrind` - Launch Webgrind container for analysis
+
+## 🔐 Security Features
+
+### ✅ Input Validation
+- Kubernetes resource name validation
+- Project name sanitization  
+- Command parameter validation
+- Environment variable validation
+
+### ✅ Secure Execution
+- No shell injection vulnerabilities
+- Parameterized command execution
+- Comprehensive error handling
+- Sanitized logging and error messages
+
+### ✅ Cryptographic Security
+- Cryptographically secure random key generation
+- No hardcoded credentials or secrets
+- Environment-based configuration
+
+## 🛡️ Security Guidelines
+
+### RBAC Configuration
+Ensure minimal required permissions:
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods/exec"]  
+  verbs: ["create"]
+```
+
+### Production Safety
+- **Performance Impact**: Profiling affects application performance - use judiciously
+- **Access Control**: Validate RBAC permissions before deployment
+- **Monitoring**: Enable audit logging for all operations
+- **Backup**: Always backup configurations before modifications
 
 ## Contribuciones
 Tus contribuciones son bienvenidas. Si tienes sugerencias o mejoras, por favor, no dudes en abrir un issue o un pull request en el repositorio.
