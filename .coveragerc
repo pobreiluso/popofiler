@@ -1,0 +1,70 @@
+# Coverage configuration for popofiler
+
+[run]
+# Source code to measure
+source = .
+
+# Files to include in coverage
+include = 
+    popofiler.py
+    test_*.py
+
+# Files to exclude from coverage
+omit = 
+    setup.py
+    */venv/*
+    */virtualenv/*
+    */.tox/*
+    */tests/*
+    test_*.py
+    *_test.py
+    conftest.py
+
+# Branch coverage
+branch = True
+
+# Parallel mode for multiprocessing
+parallel = False
+
+# Data file
+data_file = .coverage
+
+[report]
+# Reporting options
+show_missing = True
+skip_covered = False
+skip_empty = True
+
+# Precision for percentages
+precision = 2
+
+# Sort by coverage percentage
+sort = Cover
+
+# Exclude lines from coverage
+exclude_lines = 
+    pragma: no cover
+    def __repr__
+    def __str__
+    if self.debug:
+    if settings.DEBUG
+    raise AssertionError
+    raise NotImplementedError
+    if 0:
+    if __name__ == .__main__.:
+    class .*\bProtocol\):
+    @(abc\.)?abstractmethod
+
+# Ignore errors
+ignore_errors = False
+
+[html]
+# HTML report directory
+directory = htmlcov
+
+# HTML report title
+title = Popofiler Test Coverage Report
+
+[xml]
+# XML output file
+output = coverage.xml
